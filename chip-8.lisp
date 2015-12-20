@@ -9,7 +9,7 @@
 (defclass chip-8 ()
   ((ram       :initform (make-array 4096 :element-type '(unsigned-byte 8)))
    (registers :initform (make-array 16 :element-type '(unsigned-byte 8)))
-   (i         :initform 0     :accessor i  :type (unsigned-byte 12))
+   (i         :initform 0     :accessor i  :type (unsigned-byte 16))
    (pc        :initform #x200 :accessor pc :type (unsigned-byte 12))
    (screen    :initform (make-array 2048 :element-type 'bit)
               :reader   screen)
