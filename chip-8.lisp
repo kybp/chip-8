@@ -1,5 +1,6 @@
 (defpackage :chip-8
-  (:use :cl :bordeaux-threads))
+  (:use :cl :bordeaux-threads)
+  (:export :main))
 (in-package :chip-8)
 (require :sdl2)
 
@@ -338,7 +339,7 @@
        (funcall it opcode chip-8)
        (warn "Unrecognised instruction: #x~4,'0x" opcode)))
 
-(defun main (&optional file)
+(defun main (file)
   (let ((width  (* +pixel-width+  +screen-width+))
         (height (* +pixel-height+ +screen-height+)))
     (sdl2:with-init ()
