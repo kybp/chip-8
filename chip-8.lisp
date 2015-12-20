@@ -6,12 +6,19 @@
   `(let ((it ,pred))
      (if it ,then ,else)))
 
+(defconstant +pixel-width+   10)
+(defconstant +pixel-height+  10)
+(defconstant +screen-width+  64)
+(defconstant +screen-height+ 32)
+
 (defclass chip-8 ()
   ((ram       :initform (make-array 4096 :element-type '(unsigned-byte 8)))
-   (registers :initform (make-array 16 :element-type '(unsigned-byte 8)))
+   (registers :initform (make-array 16   :element-type '(unsigned-byte 8)))
    (i         :initform 0     :accessor i  :type (unsigned-byte 16))
    (pc        :initform #x200 :accessor pc :type (unsigned-byte 12))
-   (screen    :initform (make-array 2048 :element-type 'bit)
+   (screen    :initform (make-array (list +screen-width+ +screen-height+)
+                                    :element-type 'boolean
+                                    :initial-element nil)
               :reader   screen)
    (delay     :initform 0 :accessor delay-timer :type (unsigned-byte 8))
    (sound     :initform 0 :accessor sound-timer :type (unsigned-byte 8))
@@ -30,11 +37,19 @@
         (mod value #x100))
   (values value (> value #xff)))
 
-(defun ram (address chip-8)
-  (aref (slot-value chip-8 'ram) address))
+(defun ram (address chip-8 &optional (n 1))
+  (loop with byte = 0
+     for pos from 0 by 8
+     for i from n above 0 do
+       (setf (ldb (byte 8 pos) byte)
+             (aref (slot-value chip-8 'ram) (+ address i)))
+     finally (return byte)))
 
-(defun (setf ram) (value address chip-8)
-  (setf (aref (slot-value chip-8 'ram) address) value))
+(defun (setf ram) (value address chip-8 &optional (n 1))
+  (loop for pos from 0 by 8
+     for i from n above 0 do
+       (setf (aref (slot-value chip-8 'ram) (+ address i))
+             (ldb (byte 8 pos) value))))
 
 (defun key-down-p (n chip-8)
   (aref (slot-value chip-8 'keys) n))
@@ -42,45 +57,48 @@
 (defun (setf key-down-p) (boolean n chip-8)
   (setf (aref (slot-value chip-8 'keys) n) boolean))
 
-(defun recognizer (description)
-  (loop for c across (reverse description)
-     for offset from 0 by 4
-     when (digit-char-p c 16)
-     collect `(= (ldb (byte 4 ,offset) opcode) ,(digit-char-p c 16))
-     into constants
-     finally (return `(lambda (opcode) (and ,@constants)))))
+(defun pixel (screen x y)
+  (aref screen x y))
 
-(defun extracting-fn (description body)
-  (let ((variables nil) (opcode (gensym)))
-    (labels ((add-variable (c size offset)
-               (push `(,(intern (string (char-upcase c)))
-                       (ldb (byte ,size ,offset) ,opcode))
-                     variables)))
-      (loop with size = 0
-         for c across (reverse description)
-         and last = nil then c
-         for offset from 0 by 4
-         if (and (not (zerop size)) (not (eql c last))) do
-           (add-variable last size (- offset size))
-           (setf size (if (digit-char-p c 16) 0 4))
-         else if (not (digit-char-p c 16)) do
-           (incf size 4)
-         finally (return `(lambda (,opcode chip-8)
-                            (declare (ignorable ,opcode))
-                            (let ,variables ,@body)))))))
+(defun (setf pixel) (boolean screen x y)
+  (setf (aref screen x y) boolean))
 
 (defmacro define-opcode (description &body body)
   `(push (cons (recognizer ,description)
-               (extracting-fn ,description ',body))
+               (extracting-fn ,description ,body))
          *opcodes*))
+
+(defmacro recognizer (description)
+  (loop for c across (reverse description)
+     for offset from 0 by 4
+     for n = (digit-char-p c 16)
+     when n collect `(= (ldb (byte 4 ,offset) opcode) ,n) into constants
+     finally (return `(lambda (opcode) (and ,@constants)))))
+
+(defmacro extracting-fn (description body)
+  (loop with opcode = (gensym) and variables = nil and size = 0
+     for c across (reverse description)
+     and last = nil then c
+     for offset from 0 by 4
+     if (and (not (zerop size)) (not (eql c last))) do
+       (push `(,(intern (string (char-upcase last)))
+                (ldb (byte ,size ,(- offset size)) ,opcode))
+             variables)
+       (setf size (if (digit-char-p c 16) 0 4))
+     else if (not (digit-char-p c 16)) do
+       (incf size 4)
+     finally (return `(lambda (,opcode chip-8)
+                        (declare (ignorable ,opcode))
+                        (let ,variables ,@body)))))
 
 (defparameter *opcodes* nil)
 
 (define-opcode "00e0"
-  (loop with screen = (screen chip-8)
-     for i below (length screen) do
-       (setf (aref screen i) 0)
-     finally (incf (pc chip-8) 2)))
+  (let ((screen (screen chip-8)))
+    (dotimes (x +screen-width+)
+      (dotimes (y +screen-height+)
+        (setf (pixel screen x y) nil)))
+    (incf (pc chip-8) 2)))
 
 (define-opcode "00ee"
   (setf (pc chip-8) (pop (stack chip-8))))
@@ -206,7 +224,45 @@
      do (setf (register i chip-8) (ram (i chip-8) chip-8))
        (incf (i chip-8))))
 
+(defun fetch-instruction (chip-8)
+  (ram (pc chip-8) chip-8 2))
+
 (defun execute (opcode chip-8)
   (aif (cdr (assoc opcode *opcodes* :test #'(lambda (x fn) (funcall fn x))))
        (funcall it opcode chip-8)
        (error "Unrecognised instruction: #x~4,'0x" opcode)))
+
+(defun draw-screen (renderer chip-8)
+  (dotimes (x +screen-width+)
+    (dotimes (y +screen-height+)
+      (let ((rect (sdl2:make-rect (* x +pixel-width+)
+                                  (* y +pixel-height+)
+                                  +pixel-width+ +pixel-height+)))
+        (if (pixel (screen chip-8) x y)
+            (sdl2:set-render-draw-color renderer 0 #xff 0 0)
+            (sdl2:set-render-draw-color renderer 0 0 #xff 0))
+        (sdl2:render-fill-rect renderer rect)))))
+
+(defun main (&optional file)
+  (let ((chip-8 (make-chip-8))
+        (width  (* +pixel-width+  +screen-width+))
+        (height (* +pixel-height+ +screen-height+)))
+    (when file (load-file file chip-8))
+    (sdl2:with-init ()
+      (sdl2:with-window (win :title "CHIP-8" :w width :h height)
+        (sdl2:with-renderer (renderer win :flags '(:accelerated))
+          (sdl2:with-event-loop ()
+            (:keyup () (sdl2:push-quit-event))
+            (:quit () t)
+            (:idle
+             ()
+             (execute (fetch-instruction chip-8) chip-8)
+             (draw-screen renderer chip-8)
+             (sdl2:render-present renderer))))))))
+
+(defun load-file (file chip-8)
+  (with-open-file (source file)
+    (loop for line = (read-line source nil nil)
+       for pc from #x200 by 2
+       while line do
+         (setf (ram pc chip-8 2) (parse-integer line :radix 16)))))
