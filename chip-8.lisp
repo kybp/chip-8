@@ -264,8 +264,7 @@
            do (symbol-macrolet ((screen (pixel (screen chip-8) j (+ i vy))))
                 (when pixel
                   (when screen (setf (register #xf chip-8) 1))
-                  (setf screen (not screen))
-                  (draw-pixel screen j (+ i vy) chip-8))))
+                  (setf screen (not screen)))))
      finally (incf (pc chip-8) 2)))
 
 (define-opcode "ex9e"
@@ -350,14 +349,17 @@
       (dotimes (y +screen-height+)
         (setf (pixel screen x y) nil)))))
 
+(defun finish-draw (chip-8)
+  (sdl2:render-present (renderer chip-8))
+  (dolist (rect *rects*) (sdl2:free-rect rect))
+  (setf *rects* nil))
+
 (defun draw-screen (chip-8)
   (let ((screen (screen chip-8)))
     (dotimes (x +screen-width+)
       (dotimes (y +screen-height+)
         (draw-pixel (pixel screen x y) x y chip-8)))
-    (sdl2:render-present (renderer chip-8))
-    (dolist (rect *rects*) (sdl2:free-rect rect))
-    (setf *rects* nil)))
+    (finish-draw chip-8)))
 
 ;;; Event handling
 
@@ -437,5 +439,5 @@
               (:idle
                ()
                (unless (wait-for-key chip-8)
-                 (execute (fetch-instruction chip-8) chip-8))
-               (draw-screen chip-8)))))))))
+                 (execute (fetch-instruction chip-8) chip-8)
+                 (draw-screen chip-8))))))))))
