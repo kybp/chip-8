@@ -1,5 +1,5 @@
 (defpackage :chip-8
-  (:use :cl))
+  (:use :cl :bordeaux-threads))
 (in-package :chip-8)
 
 (defmacro aif (pred then else)
@@ -16,42 +16,46 @@
 (defconstant +screen-height+ 32)
 
 (defclass chip-8 ()
-  ((ram       :initform (make-array 4096 :element-type '(unsigned-byte 8)))
-   (registers :initform (make-array 16   :element-type '(unsigned-byte 8)))
-   (i         :initform 0     :accessor i  :type (unsigned-byte 16))
-   (pc        :initform #x200 :accessor pc :type (unsigned-byte 12))
-   (screen    :initform (make-array (list +screen-width+ +screen-height+)
-                                    :element-type 'boolean
-                                    :initial-element nil)
-              :reader   screen)
-   (delay     :initform 0 :accessor delay-timer :type (unsigned-byte 8))
-   (sound     :initform 0 :accessor sound-timer :type (unsigned-byte 8))
-   (stack     :initform nil :accessor stack)
-   (keys      :initform (make-array 16 :element-type 'boolean
-                                    :initial-element nil))
+  ((ram        :initform (make-array 4096 :element-type '(unsigned-byte 8)))
+   (registers  :initform (make-array 16   :element-type '(unsigned-byte 8)))
+   (i          :initform 0     :accessor i  :type (unsigned-byte 16))
+   (pc         :initform #x200 :accessor pc :type (unsigned-byte 12))
+   (screen     :initform (make-array (list +screen-width+ +screen-height+)
+                                     :element-type 'boolean
+                                     :initial-element nil)
+               :reader   screen)
+   (delay      :initform 0 :accessor delay-timer :type (unsigned-byte 8))
+   (sound      :initform 0 :accessor sound-timer :type (unsigned-byte 8))
+   (delay-lock :initform (make-lock) :accessor delay-lock)
+   (sound-lock :initform (make-lock) :accessor sound-lock)
+   (stack      :initform nil :accessor stack)
+   (keys       :initform (make-array 16 :element-type 'boolean
+                                     :initial-element nil))
    (wait-for-key :initform nil :accessor wait-for-key)))
 
 (defun make-chip-8 ()
-  (initialize-font (make-instance 'chip-8)))
+  (let ((chip-8 (make-instance 'chip-8)))
+    (make-thread #'(lambda () (update-timers chip-8)))
+    (initialize-font chip-8)
+    chip-8))
 
 (defun initialize-font (chip-8)
-  (setf (ram #x50 chip-8 5) #xf0909090f0) ; 0
-  (setf (ram #x55 chip-8 5) #x2060202070) ; 1
-  (setf (ram #x5a chip-8 5) #xf010f080f0) ; 2
-  (setf (ram #x5f chip-8 5) #xf010f010f0) ; 3
-  (setf (ram #x64 chip-8 5) #x9090f01010) ; 4
-  (setf (ram #x69 chip-8 5) #xf080f010f0) ; 5
-  (setf (ram #x6e chip-8 5) #xf080f090f0) ; 6
-  (setf (ram #x73 chip-8 5) #xf010204040) ; 7
-  (setf (ram #x78 chip-8 5) #xf090f090f0) ; 8
-  (setf (ram #x7d chip-8 5) #xf090f010f0) ; 9
-  (setf (ram #x82 chip-8 5) #xf090f09090) ; A
-  (setf (ram #x87 chip-8 5) #xe090e090e0) ; B
-  (setf (ram #x8c chip-8 5) #xf0808080f0) ; C
-  (setf (ram #x91 chip-8 5) #xe0909090e0) ; D
-  (setf (ram #x96 chip-8 5) #xf080f080f0) ; E
-  (setf (ram #x9b chip-8 5) #xf080f08080) ; F
-  chip-8)
+  (setf (ram #x50 chip-8 5) #xf0909090f0)  ; 0
+  (setf (ram #x55 chip-8 5) #x2060202070)  ; 1
+  (setf (ram #x5a chip-8 5) #xf010f080f0)  ; 2
+  (setf (ram #x5f chip-8 5) #xf010f010f0)  ; 3
+  (setf (ram #x64 chip-8 5) #x9090f01010)  ; 4
+  (setf (ram #x69 chip-8 5) #xf080f010f0)  ; 5
+  (setf (ram #x6e chip-8 5) #xf080f090f0)  ; 6
+  (setf (ram #x73 chip-8 5) #xf010204040)  ; 7
+  (setf (ram #x78 chip-8 5) #xf090f090f0)  ; 8
+  (setf (ram #x7d chip-8 5) #xf090f010f0)  ; 9
+  (setf (ram #x82 chip-8 5) #xf090f09090)  ; A
+  (setf (ram #x87 chip-8 5) #xe090e090e0)  ; B
+  (setf (ram #x8c chip-8 5) #xf0808080f0)  ; C
+  (setf (ram #x91 chip-8 5) #xe0909090e0)  ; D
+  (setf (ram #x96 chip-8 5) #xf080f080f0)  ; E
+  (setf (ram #x9b chip-8 5) #xf080f08080)) ; F
 
 (defun register (n chip-8)
   (aref (slot-value chip-8 'registers) n))
@@ -240,7 +244,8 @@
   (skip-when (not (key-down-p (register x chip-8) chip-8)) chip-8))
 
 (define-opcode "fx07"
-  (setf (register x chip-8) (delay-timer chip-8))
+  (with-lock-held ((delay-lock chip-8))
+    (setf (register x chip-8) (delay-timer chip-8)))
   (incf (pc chip-8) 2))
 
 (define-opcode "fx0a"
@@ -252,7 +257,8 @@
   (incf (pc chip-8) 2))
 
 (define-opcode "fx18"
-  (setf (sound-timer chip-8) (register x chip-8))
+  (with-lock-held ((sound-lock chip-8))
+    (setf (sound-timer chip-8) (register x chip-8)))
   (incf (pc chip-8) 2))
 
 (define-opcode "fx1e"
@@ -372,3 +378,13 @@
        while line do
          (setf (ram pc chip-8 2)
                (parse-integer (subseq line 0 4) :radix 16)))))
+
+(defun update-timers (chip-8)
+  (sleep 0.017)
+  (with-lock-held ((delay-lock chip-8))
+    (when (> (delay-timer chip-8) 0)
+      (decf (delay-timer chip-8))))
+  (with-lock-held ((sound-lock chip-8))
+    (when (> (sound-timer chip-8) 0)
+      (decf (sound-lock chip-8))))
+  (update-timers chip-8))
