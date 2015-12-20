@@ -240,7 +240,7 @@
 (define-opcode "ex9e"
   (skip-when (key-down-p (register x chip-8) chip-8) chip-8))
 
-(define-opcode "ex9e"
+(define-opcode "exa1"
   (skip-when (not (key-down-p (register x chip-8) chip-8)) chip-8))
 
 (define-opcode "fx07"
@@ -371,7 +371,7 @@
         ((sdl2:scancode= scancode :scancode-c) #xb)
         ((sdl2:scancode= scancode :scancode-v) #xf)))
 
-(defun load-file (file chip-8)
+(defun load-text-file (file chip-8)
   (with-open-file (source file)
     (loop for line = (read-line source nil nil)
        for pc from #x200 by 2
@@ -379,8 +379,14 @@
          (setf (ram pc chip-8 2)
                (parse-integer (subseq line 0 4) :radix 16)))))
 
+(defun load-file (file chip-8)
+  (with-open-file (input file :element-type '(unsigned-byte 8))
+    (loop for pc from #x200
+       for byte = (read-byte input nil nil)
+       while byte do (setf (ram pc chip-8) byte))))
+
 (defun update-timers (chip-8)
-  (sleep 0.017)
+  (sleep (/ 1 60))
   (with-lock-held ((delay-lock chip-8))
     (when (> (delay-timer chip-8) 0)
       (decf (delay-timer chip-8))))
@@ -388,3 +394,7 @@
     (when (> (sound-timer chip-8) 0)
       (decf (sound-lock chip-8))))
   (update-timers chip-8))
+
+(defun pm (start n chip-8)
+  (loop for i from start to (+ start n) by 2
+     do (format t "~4,'0x: ~4,'0x~%" i (ram i chip-8 2))))
