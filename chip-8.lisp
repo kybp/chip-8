@@ -177,10 +177,24 @@
     (setf (register #xf chip-8) (if carryp 1 0))
     (incf (pc chip-8) 2)))
 
+(define-opcode "8xy5"
+  (symbol-macrolet ((vx (register x chip-8))
+                    (vy (register y chip-8)))
+    (setf (register #xf chip-8) (if (> vy vx) 0 1))
+    (setf vx (- vx vy))
+    (incf (pc chip-8) 2)))
+
 (define-opcode "8xy6"
   (symbol-macrolet ((vy (register y chip-8)))
     (setf (register x   chip-8) (ash vy -1))
     (setf (register #xf chip-8) (ldb (byte 1 0) vy))
+    (incf (pc chip-8) 2)))
+
+(define-opcode "8xy7"
+  (symbol-macrolet ((vx (register x chip-8))
+                    (vy (register y chip-8)))
+    (setf (register #xf chip-8) (if (> vx vy) 0 1))
+    (setf vx (- vy vx))
     (incf (pc chip-8) 2)))
 
 (define-opcode "8xye"
