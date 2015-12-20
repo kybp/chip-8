@@ -42,7 +42,7 @@
 (defun (setf key-down-p) (boolean n chip-8)
   (setf (aref (slot-value chip-8 'keys) n) boolean))
 
-(defmacro recognizer (description)
+(defun recognizer (description)
   (loop for c across (reverse description)
      for offset from 0 by 4
      when (digit-char-p c 16)
@@ -50,7 +50,7 @@
      into constants
      finally (return `(lambda (opcode) (and ,@constants)))))
 
-(defmacro extracting-fn (description &body body)
+(defun extracting-fn (description body)
   (let ((variables nil) (opcode (gensym)))
     (labels ((add-variable (c size offset)
                (push `(,(intern (string (char-upcase c)))
@@ -71,7 +71,7 @@
 
 (defmacro define-opcode (description &body body)
   `(push (cons (recognizer ,description)
-               (extracting-fn ,description ,@body))
+               (extracting-fn ,description ',body))
          *opcodes*))
 
 (defparameter *opcodes* nil)
@@ -158,7 +158,7 @@
   (setf (pc chip-8) (+ (register 0 chip-8) n)))
 
 (define-opcode "cxnn"
-  (setf (register x chip-8) (rand (logand (random #xff) n)))
+  (setf (register x chip-8) (logand (random #xff) n))
   (incf (pc chip-8) 2))
 
 (define-opcode "ex9e"
