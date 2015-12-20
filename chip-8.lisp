@@ -244,7 +244,8 @@
   (incf (pc chip-8) 2))
 
 (define-opcode "fx0a"
-  (setf (wait-for-key chip-8) x))
+  (setf (wait-for-key chip-8) x)
+  (incf (pc chip-8) 2))
 
 (define-opcode "fx15"
   (setf (delay-timer chip-8) (register x chip-8))
@@ -273,17 +274,20 @@
   (let ((digits  (digits (register x chip-8)))
         (address (i chip-8)))
     (dotimes (i 3)
-      (setf (ram (+ address i) chip-8) (elt digits i)))))
+      (setf (ram (+ address i) chip-8) (elt digits i))
+      (incf (pc chip-8) 2))))
 
 (define-opcode "fx55"
   (loop for i from 0 to x
      do (setf (ram (i chip-8) chip-8) (register i chip-8))
-       (incf (i chip-8))))
+       (incf (i chip-8))
+     finally (incf (pc chip-8) 2)))
 
 (define-opcode "fx65"
   (loop for i from 0 to x
      do (setf (register i chip-8) (ram (i chip-8) chip-8))
-       (incf (i chip-8))))
+       (incf (i chip-8))
+     finally (incf (pc chip-8) 2)))
 
 (defun fetch-instruction (chip-8)
   (ram (pc chip-8) chip-8 2))
@@ -318,6 +322,7 @@
              (let* ((scancode (sdl2:scancode-value keysym))
                     (hex      (hex-key-from-scancode scancode)))
                (awhen (and hex (wait-for-key chip-8))
+                 (setf (wait-for-key chip-8) nil)
                  (setf (register it chip-8) hex))
                (handle-key-down keysym chip-8)))
             (:keyup
@@ -365,4 +370,5 @@
     (loop for line = (read-line source nil nil)
        for pc from #x200 by 2
        while line do
-         (setf (ram pc chip-8 2) (parse-integer line :radix 16)))))
+         (setf (ram pc chip-8 2)
+               (parse-integer (subseq line 0 4) :radix 16)))))
