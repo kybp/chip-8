@@ -15,6 +15,8 @@
 (defconstant +pixel-height+  10)
 (defconstant +screen-width+  64)
 (defconstant +screen-height+ 32)
+(defconstant *on-rgba*  (list #xff #xff #x00 #x00))
+(defconstant *off-rgba* (list #x00 #x64 #x00 #x00))
 
 (defclass chip-8 ()
   ((ram        :initform (make-array 4096 :element-type '(unsigned-byte 8)))
@@ -124,15 +126,19 @@
 
 (defparameter *opcodes* nil)
 
+(defun set-draw-color (renderer rgb)
+  (eval `(sdl2:set-render-draw-color ,renderer ,@rgb)))
+
+(defvar *rects* nil)
+
 (defun draw-pixel (onp x y chip-8)
   (let ((renderer (renderer chip-8))
         (rect (sdl2:make-rect (* (mod x +screen-width+)  +pixel-width+)
                               (* (mod y +screen-height+) +pixel-height+)
                               +pixel-width+ +pixel-height+)))
-    (if onp
-        (sdl2:set-render-draw-color renderer 0 #xff 0 #xff)
-        (sdl2:set-render-draw-color renderer 0 0 #xff #xff))
-    (sdl2:render-fill-rect renderer rect)))
+    (set-draw-color renderer (if onp *on-rgba* *off-rgba*))
+    (sdl2:render-fill-rect renderer rect)
+    (push rect *rects*)))
 
 (defun clear-screen (chip-8)
   (let ((screen (screen chip-8)))
@@ -145,7 +151,9 @@
     (dotimes (x +screen-width+)
       (dotimes (y +screen-height+)
         (draw-pixel (pixel screen x y) x y chip-8)))
-    (sdl2:render-present (renderer chip-8))))
+    (sdl2:render-present (renderer chip-8))
+    (dolist (rect *rects*) (sdl2:free-rect rect))
+    (setf *rects* nil)))
 
 (define-opcode "00e0"
   (clear-screen chip-8)
@@ -300,7 +308,8 @@
      for x = n then (floor (/ x 10))
      until (zerop x) do
        (push (mod x 10) digits)
-     finally (return digits)))
+     finally (return (dotimes (i (- 3 (length digits)) digits)
+                       (push 0 digits)))))
 
 (define-opcode "fx33"
   (let ((digits  (digits (register x chip-8)))
@@ -336,7 +345,7 @@
       (sdl2:with-window (win :title "CHIP-8" :w width :h height)
         (sdl2:with-renderer (renderer win :flags '(:accelerated))
           (let ((chip-8 (make-chip-8 renderer)))
-            (load-text-file file chip-8)
+            (load-file file chip-8)
             (sdl2:with-event-loop ()
               (:keydown
                (:keysym keysym)
@@ -385,6 +394,13 @@
         ((sdl2:scancode= scancode :scancode-c) #xb)
         ((sdl2:scancode= scancode :scancode-v) #xf)))
 
+(defun load-file (file chip-8)
+  (cond ((equal (pathname-type file) "txt")
+         (load-text-file file chip-8))
+        ((equal (pathname-type file) "ch8")
+         (load-binary-file file chip-8))
+        (t (error "Unrecognised file type for ~s" file))))
+
 (defun load-text-file (file chip-8)
   (with-open-file (source file)
     (loop for line = (read-line source nil nil)
@@ -393,7 +409,7 @@
          (setf (ram pc chip-8 2)
                (parse-integer (subseq line 0 4) :radix 16)))))
 
-(defun load-file (file chip-8)
+(defun load-binary-file (file chip-8)
   (with-open-file (input file :element-type '(unsigned-byte 8))
     (loop for pc from #x200
        for byte = (read-byte input nil nil)
@@ -406,5 +422,5 @@
       (decf (delay-timer chip-8))))
   (with-lock-held ((sound-lock chip-8))
     (when (> (sound-timer chip-8) 0)
-      (decf (sound-lock chip-8))))
+      (decf (sound-timer chip-8))))
   (update-timers chip-8))
