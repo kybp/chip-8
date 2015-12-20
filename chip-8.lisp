@@ -6,6 +6,10 @@
   `(let ((it ,pred))
      (if it ,then ,else)))
 
+(defmacro awhen (pred &body body)
+  `(let ((it ,pred))
+     (when it ,@body)))
+
 (defconstant +pixel-width+   10)
 (defconstant +pixel-height+  10)
 (defconstant +screen-width+  64)
@@ -24,10 +28,30 @@
    (sound     :initform 0 :accessor sound-timer :type (unsigned-byte 8))
    (stack     :initform nil :accessor stack)
    (keys      :initform (make-array 16 :element-type 'boolean
-                                    :initial-element nil))))
+                                    :initial-element nil))
+   (wait-for-key :initform nil :accessor wait-for-key)))
 
 (defun make-chip-8 ()
-  (make-instance 'chip-8))
+  (initialize-font (make-instance 'chip-8)))
+
+(defun initialize-font (chip-8)
+  (setf (ram #x50 chip-8 5) #xf0909090f0) ; 0
+  (setf (ram #x55 chip-8 5) #x2060202070) ; 1
+  (setf (ram #x5a chip-8 5) #xf010f080f0) ; 2
+  (setf (ram #x5f chip-8 5) #xf010f010f0) ; 3
+  (setf (ram #x64 chip-8 5) #x9090f01010) ; 4
+  (setf (ram #x69 chip-8 5) #xf080f010f0) ; 5
+  (setf (ram #x6e chip-8 5) #xf080f090f0) ; 6
+  (setf (ram #x73 chip-8 5) #xf010204040) ; 7
+  (setf (ram #x78 chip-8 5) #xf090f090f0) ; 8
+  (setf (ram #x7d chip-8 5) #xf090f010f0) ; 9
+  (setf (ram #x82 chip-8 5) #xf090f09090) ; A
+  (setf (ram #x87 chip-8 5) #xe090e090e0) ; B
+  (setf (ram #x8c chip-8 5) #xf0808080f0) ; C
+  (setf (ram #x91 chip-8 5) #xe0909090e0) ; D
+  (setf (ram #x96 chip-8 5) #xf080f080f0) ; E
+  (setf (ram #x9b chip-8 5) #xf080f08080) ; F
+  chip-8)
 
 (defun register (n chip-8)
   (aref (slot-value chip-8 'registers) n))
@@ -179,6 +203,22 @@
   (setf (register x chip-8) (logand (random #xff) n))
   (incf (pc chip-8) 2))
 
+(defun get-sprite (address n chip-8)
+  (loop for i from 0 below n
+     collect (map 'list #'(lambda (c) (eql #\1 c))
+                  (format nil "~8,'0b" (ram (+ address i) chip-8)))))
+
+(define-opcode "dxyn"
+  (loop with sprite = (get-sprite (i chip-8) n chip-8)
+     for i below n
+     for row = (elt sprite i)
+     do (loop for pixel in row for j from x
+           do (symbol-macrolet ((screen (pixel (screen chip-8) j (+ i y))))
+                (when pixel
+                  (when screen (setf (register #xf chip-8) 1))
+                  (setf screen (not screen)))))
+     finally (incf (pc chip-8) 2)))
+
 (define-opcode "ex9e"
   (skip-when (key-down-p (register x chip-8) chip-8) chip-8))
 
@@ -188,6 +228,9 @@
 (define-opcode "fx07"
   (setf (register x chip-8) (delay-timer chip-8))
   (incf (pc chip-8) 2))
+
+(define-opcode "fx0a"
+  (setf (wait-for-key chip-8) x))
 
 (define-opcode "fx15"
   (setf (delay-timer chip-8) (register x chip-8))
@@ -199,6 +242,10 @@
 
 (define-opcode "fx1e"
   (incf (i chip-8) (register x chip-8))
+  (incf (pc chip-8) 2))
+
+(define-opcode "fx29"
+  (setf (i chip-8) (register x chip-8))
   (incf (pc chip-8) 2))
 
 (defun digits (n)
@@ -252,13 +299,52 @@
       (sdl2:with-window (win :title "CHIP-8" :w width :h height)
         (sdl2:with-renderer (renderer win :flags '(:accelerated))
           (sdl2:with-event-loop ()
-            (:keyup () (sdl2:push-quit-event))
+            (:keydown
+             (:keysym keysym)
+             (let* ((scancode (sdl2:scancode-value keysym))
+                    (hex      (hex-key-from-scancode scancode)))
+               (awhen (and hex (wait-for-key chip-8))
+                 (setf (register it chip-8) hex))
+               (handle-key-down keysym chip-8)))
+            (:keyup
+             (:keysym keysym)
+             (handle-key-up keysym chip-8))
             (:quit () t)
             (:idle
              ()
-             (execute (fetch-instruction chip-8) chip-8)
+             (unless (wait-for-key chip-8)
+               (execute (fetch-instruction chip-8) chip-8))
              (draw-screen renderer chip-8)
              (sdl2:render-present renderer))))))))
+
+(defun handle-key-down (keysym chip-8)
+  (let* ((scancode (sdl2:scancode-value keysym))
+         (hex      (hex-key-from-scancode scancode)))
+    (cond ((sdl2:scancode= scancode :scancode-escape)
+           (sdl2:push-event :quit))
+          (hex (setf (key-down-p hex chip-8) t)))))
+
+(defun handle-key-up (keysym chip-8)
+  (awhen (hex-key-from-scancode (sdl2:scancode-value keysym))
+    (setf (key-down-p it chip-8) nil)))
+
+(defun hex-key-from-scancode (scancode)
+  (cond ((sdl2:scancode= scancode :scancode-1) #x1)
+        ((sdl2:scancode= scancode :scancode-2) #x2)
+        ((sdl2:scancode= scancode :scancode-3) #x3)
+        ((sdl2:scancode= scancode :scancode-4) #xc)
+        ((sdl2:scancode= scancode :scancode-q) #x4)
+        ((sdl2:scancode= scancode :scancode-w) #x5)
+        ((sdl2:scancode= scancode :scancode-e) #x6)
+        ((sdl2:scancode= scancode :scancode-r) #xd)
+        ((sdl2:scancode= scancode :scancode-a) #x7)
+        ((sdl2:scancode= scancode :scancode-s) #x8)
+        ((sdl2:scancode= scancode :scancode-d) #x9)
+        ((sdl2:scancode= scancode :scancode-f) #xe)
+        ((sdl2:scancode= scancode :scancode-z) #xa)
+        ((sdl2:scancode= scancode :scancode-x) #x0)
+        ((sdl2:scancode= scancode :scancode-c) #xb)
+        ((sdl2:scancode= scancode :scancode-v) #xf)))
 
 (defun load-file (file chip-8)
   (with-open-file (source file)
