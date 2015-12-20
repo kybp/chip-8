@@ -1,6 +1,7 @@
 (defpackage :chip-8
   (:use :cl :bordeaux-threads))
 (in-package :chip-8)
+(require :sdl2)
 
 (defmacro aif (pred then else)
   `(let ((it ,pred))
@@ -24,6 +25,7 @@
                                      :element-type 'boolean
                                      :initial-element nil)
                :reader   screen)
+   (renderer   :initarg :renderer :accessor renderer)
    (delay      :initform 0 :accessor delay-timer :type (unsigned-byte 8))
    (sound      :initform 0 :accessor sound-timer :type (unsigned-byte 8))
    (delay-lock :initform (make-lock) :accessor delay-lock)
@@ -33,10 +35,11 @@
                                      :initial-element nil))
    (wait-for-key :initform nil :accessor wait-for-key)))
 
-(defun make-chip-8 ()
-  (let ((chip-8 (make-instance 'chip-8)))
+(defun make-chip-8 (renderer)
+  (let ((chip-8 (make-instance 'chip-8 :renderer renderer)))
     (make-thread #'(lambda () (update-timers chip-8)))
     (initialize-font chip-8)
+    (clear-screen chip-8)
     chip-8))
 
 (defun initialize-font (chip-8)
@@ -86,10 +89,10 @@
   (setf (aref (slot-value chip-8 'keys) n) boolean))
 
 (defun pixel (screen x y)
-  (aref screen x y))
+  (aref screen (mod x +screen-width+) (mod y +screen-height+)))
 
 (defun (setf pixel) (boolean screen x y)
-  (setf (aref screen x y) boolean))
+  (setf (aref screen (mod x +screen-width+) (mod y +screen-height+)) boolean))
 
 (defmacro define-opcode (description &body body)
   `(push (cons (recognizer ,description)
@@ -121,12 +124,32 @@
 
 (defparameter *opcodes* nil)
 
-(define-opcode "00e0"
+(defun draw-pixel (onp x y chip-8)
+  (let ((renderer (renderer chip-8))
+        (rect (sdl2:make-rect (* (mod x +screen-width+)  +pixel-width+)
+                              (* (mod y +screen-height+) +pixel-height+)
+                              +pixel-width+ +pixel-height+)))
+    (if onp
+        (sdl2:set-render-draw-color renderer 0 #xff 0 #xff)
+        (sdl2:set-render-draw-color renderer 0 0 #xff #xff))
+    (sdl2:render-fill-rect renderer rect)))
+
+(defun clear-screen (chip-8)
   (let ((screen (screen chip-8)))
     (dotimes (x +screen-width+)
       (dotimes (y +screen-height+)
-        (setf (pixel screen x y) nil)))
-    (incf (pc chip-8) 2)))
+        (setf (pixel screen x y) nil)))))
+
+(defun draw-screen (chip-8)
+  (let ((screen (screen chip-8)))
+    (dotimes (x +screen-width+)
+      (dotimes (y +screen-height+)
+        (draw-pixel (pixel screen x y) x y chip-8)))
+    (sdl2:render-present (renderer chip-8))))
+
+(define-opcode "00e0"
+  (clear-screen chip-8)
+  (incf (pc chip-8) 2))
 
 (define-opcode "00ee"
   (setf (pc chip-8) (pop (stack chip-8))))
@@ -227,14 +250,16 @@
                   (format nil "~8,'0b" (ram (+ address i) chip-8)))))
 
 (define-opcode "dxyn"
-  (loop with sprite = (get-sprite (i chip-8) n chip-8)
+  (loop with vx = (register x chip-8) and vy = (register y chip-8)
+     and sprite = (get-sprite (i chip-8) n chip-8)
      for i below n
      for row = (elt sprite i)
-     do (loop for pixel in row for j from x
-           do (symbol-macrolet ((screen (pixel (screen chip-8) j (+ i y))))
+     do (loop for pixel in row for j from vx
+           do (symbol-macrolet ((screen (pixel (screen chip-8) j (+ i vy))))
                 (when pixel
                   (when screen (setf (register #xf chip-8) 1))
-                  (setf screen (not screen)))))
+                  (setf screen (not screen))
+                  (draw-pixel screen j (+ i vy) chip-8))))
      finally (incf (pc chip-8) 2)))
 
 (define-opcode "ex9e"
@@ -253,7 +278,8 @@
   (incf (pc chip-8) 2))
 
 (define-opcode "fx15"
-  (setf (delay-timer chip-8) (register x chip-8))
+  (with-lock-held ((delay-lock chip-8))
+    (setf (delay-timer chip-8) (register x chip-8)))
   (incf (pc chip-8) 2))
 
 (define-opcode "fx18"
@@ -266,7 +292,7 @@
   (incf (pc chip-8) 2))
 
 (define-opcode "fx29"
-  (setf (i chip-8) (register x chip-8))
+  (setf (i chip-8) (+ (* 5 (register x chip-8)) #x50))
   (incf (pc chip-8) 2))
 
 (defun digits (n)
@@ -301,46 +327,34 @@
 (defun execute (opcode chip-8)
   (aif (cdr (assoc opcode *opcodes* :test #'(lambda (x fn) (funcall fn x))))
        (funcall it opcode chip-8)
-       (error "Unrecognised instruction: #x~4,'0x" opcode)))
-
-(defun draw-screen (renderer chip-8)
-  (dotimes (x +screen-width+)
-    (dotimes (y +screen-height+)
-      (let ((rect (sdl2:make-rect (* x +pixel-width+)
-                                  (* y +pixel-height+)
-                                  +pixel-width+ +pixel-height+)))
-        (if (pixel (screen chip-8) x y)
-            (sdl2:set-render-draw-color renderer 0 #xff 0 0)
-            (sdl2:set-render-draw-color renderer 0 0 #xff 0))
-        (sdl2:render-fill-rect renderer rect)))))
+       (warn "Unrecognised instruction: #x~4,'0x" opcode)))
 
 (defun main (&optional file)
-  (let ((chip-8 (make-chip-8))
-        (width  (* +pixel-width+  +screen-width+))
+  (let ((width  (* +pixel-width+  +screen-width+))
         (height (* +pixel-height+ +screen-height+)))
-    (when file (load-file file chip-8))
     (sdl2:with-init ()
       (sdl2:with-window (win :title "CHIP-8" :w width :h height)
         (sdl2:with-renderer (renderer win :flags '(:accelerated))
-          (sdl2:with-event-loop ()
-            (:keydown
-             (:keysym keysym)
-             (let* ((scancode (sdl2:scancode-value keysym))
-                    (hex      (hex-key-from-scancode scancode)))
-               (awhen (and hex (wait-for-key chip-8))
-                 (setf (wait-for-key chip-8) nil)
-                 (setf (register it chip-8) hex))
-               (handle-key-down keysym chip-8)))
-            (:keyup
-             (:keysym keysym)
-             (handle-key-up keysym chip-8))
-            (:quit () t)
-            (:idle
-             ()
-             (unless (wait-for-key chip-8)
-               (execute (fetch-instruction chip-8) chip-8))
-             (draw-screen renderer chip-8)
-             (sdl2:render-present renderer))))))))
+          (let ((chip-8 (make-chip-8 renderer)))
+            (load-text-file file chip-8)
+            (sdl2:with-event-loop ()
+              (:keydown
+               (:keysym keysym)
+               (let* ((scancode (sdl2:scancode-value keysym))
+                      (hex      (hex-key-from-scancode scancode)))
+                 (awhen (and hex (wait-for-key chip-8))
+                   (setf (wait-for-key chip-8) nil)
+                   (setf (register it chip-8) hex))
+                 (handle-key-down keysym chip-8)))
+              (:keyup
+               (:keysym keysym)
+               (handle-key-up keysym chip-8))
+              (:quit () t)
+              (:idle
+               ()
+               (unless (wait-for-key chip-8)
+                 (execute (fetch-instruction chip-8) chip-8))
+               (draw-screen chip-8)))))))))
 
 (defun handle-key-down (keysym chip-8)
   (let* ((scancode (sdl2:scancode-value keysym))
@@ -394,7 +408,3 @@
     (when (> (sound-timer chip-8) 0)
       (decf (sound-lock chip-8))))
   (update-timers chip-8))
-
-(defun pm (start n chip-8)
-  (loop for i from start to (+ start n) by 2
-     do (format t "~4,'0x: ~4,'0x~%" i (ram i chip-8 2))))
