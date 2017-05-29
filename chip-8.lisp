@@ -14,7 +14,7 @@
   `(let ((it ,pred))
      (when it ,@body)))
 
-;;; Constants
+;;; Globals
 
 (defparameter *pixel-width* 10
   "The width in actual screen pixels of 1 CHIP-8 pixel.")
@@ -29,11 +29,11 @@
   "The height in CHIP-8 pixels of a CHIP-8 screen.")
 
 (defvar *on-rgba* (list #xff #xff #x00 #x00)
-  "A list of 4 16-bit values indicating the RGBA color to draw for a CHIP-8
+  "A list of 4 8-bit values indicating the RGBA color to draw for a CHIP-8
 pixel when that pixel is set.")
 
 (defvar *off-rgba* (list #x00 #x64 #x00 #x00)
-  "A list of 4 16-bit values indicating the RGBA color to draw for a CHIP-8
+  "A list of 4 8-bit values indicating the RGBA color to draw for a CHIP-8
 pixel when that pixel is not set.")
 
 ;;; CHIP-8 interface
@@ -165,11 +165,18 @@ a valid instruction, signal a warning."
 
 DESCRIPTION should be a string describing the opcode's hex format. Valid hex
 digits will be interpreted as literal numbers, while invalid hex digits will be
-treated as parameters and provided for use in BODY.
+treated as parameters and provided for use in BODY. If more than one consecutive
+character is the same invalid hex digit, it will be interpreted as a single
+parameter of that many nibbles.
 
 BODY is the code to be executed when the opcode is executed. During its
 execution, parameters given in DESCRIPTION will be provided, and the CHIP-8
-instance will be provided as CHIP-8."
+instance will be provided as CHIP-8.
+
+For example, \"4xnn\" describes an opcode consisting of a literal 4, followed by
+a 4-bit parameter X, followed by an 8-bit parameter N. If applied to the
+instruction #x47AD, then during the execution of BODY, X would be bound to #x7
+and N would be bound to #xAD."
   `(push (cons (recognizer ,description)
                (extracting-fn ,description ,body))
          *opcodes*))
@@ -210,9 +217,13 @@ given opcode. The values are functions accepting an opcode and a CHIP-8 instance
 which when called will execute that instruction. Additions to this list should
 be made using DEFINE-OPCDOE.")
 
+(defun next-instruction (chip-8)
+  "Advance the PC in CHIP-8 to the next instruction."
+  (incf (pc chip-8) 2))
+
 (define-opcode "00e0"
   (clear-screen chip-8)
-  (incf (pc chip-8) 2))
+  (next-instruction chip-8))
 
 (define-opcode "00ee"
   (setf (pc chip-8) (pop (stack chip-8))))
@@ -224,13 +235,11 @@ be made using DEFINE-OPCDOE.")
   (push (pc chip-8) (stack chip-8))
   (setf (pc chip-8) n))
 
-(defun next-instruction (chip-8)
-  "Advance the PC in CHIP-8 to the next instruction."
-  (incf (pc chip-8) 2))
-
 (defun skip-when (skip-p chip-8)
-  "If SKIP-P is non-NIL, then skip the next instruction, otherwise don't."
-  (incf (pc chip-8) (if skip-p 4 2)))
+  "If SKIP-P is non-NIL, then skip the next instruction (advancing 2
+instructions total), otherwise just advance to the next instruction."
+  (loop repeat (if skip-p 1 2)
+     do (next-instruction chip-8)))
 
 (define-opcode "3xnn"
   (skip-when (= (register x chip-8) n) chip-8))
