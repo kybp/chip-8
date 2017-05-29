@@ -55,12 +55,14 @@ pixel when that pixel is not set.")
    (stack      :initform nil :accessor stack)
    (keys       :initform
                (make-array 16 :element-type 'boolean :initial-element nil))
-   (wait-for-key :initform nil :accessor wait-for-key)))
+   (wait-for-key :initform nil :accessor wait-for-key)
+   (timer-thread :initform nil :accessor timer-thread)))
 
 (defun make-chip-8 (renderer)
   "Create a new CHIP-8 instance."
   (let ((chip-8 (make-instance 'chip-8 :renderer renderer)))
-    (make-thread #'(lambda () (update-timers chip-8)))
+    (setf (timer-thread chip-8)
+          (make-thread #'(lambda () (update-timers chip-8))))
     (initialize-font chip-8)
     (clear-screen chip-8)
     chip-8))
@@ -478,31 +480,37 @@ as a binary file."
        for byte = (read-byte input nil nil)
        while byte do (setf (ram pc chip-8) byte))))
 
+(defun run-chip-8 (chip-8)
+  "Run the CHIP-8 simulator in an SDL event loop until the user exits."
+  (sdl2:with-event-loop ()
+    (:keydown
+     (:keysym keysym)
+     (let* ((scancode (sdl2:scancode-value keysym))
+            (hex      (hex-key-from-scancode scancode)))
+       (awhen (and hex (wait-for-key chip-8))
+         (setf (wait-for-key chip-8) nil)
+         (setf (register it chip-8) hex))
+       (handle-key-down keysym chip-8)))
+    (:keyup
+     (:keysym keysym)
+     (handle-key-up keysym chip-8))
+    (:quit () t)
+    (:idle
+     ()
+     (unless (wait-for-key chip-8)
+       (execute (fetch-instruction chip-8) chip-8)
+       (draw-screen chip-8)))))
+
 (defun main (filespec)
   "Create a new CHIP-8 instance and graphical window and attempt to run the file
 indicated by FILESPEC."
   (let ((width  (* *pixel-width*  *screen-width*))
         (height (* *pixel-height* *screen-height*)))
     (sdl2:with-init ()
-      (sdl2:with-window (win :title "CHIP-8" :w width :h height)
-        (sdl2:with-renderer (renderer win :flags '(:accelerated))
+      (sdl2:with-window (window :title "CHIP-8" :w width :h height)
+        (sdl2:with-renderer (renderer window :flags '(:accelerated))
           (let ((chip-8 (make-chip-8 renderer)))
             (load-file filespec chip-8)
-            (sdl2:with-event-loop ()
-              (:keydown
-               (:keysym keysym)
-               (let* ((scancode (sdl2:scancode-value keysym))
-                      (hex      (hex-key-from-scancode scancode)))
-                 (awhen (and hex (wait-for-key chip-8))
-                   (setf (wait-for-key chip-8) nil)
-                   (setf (register it chip-8) hex))
-                 (handle-key-down keysym chip-8)))
-              (:keyup
-               (:keysym keysym)
-               (handle-key-up keysym chip-8))
-              (:quit () t)
-              (:idle
-               ()
-               (unless (wait-for-key chip-8)
-                 (execute (fetch-instruction chip-8) chip-8)
-                 (draw-screen chip-8))))))))))
+            (unwind-protect (run-chip-8 chip-8)
+              (awhen (timer-thread chip-8)
+                (destroy-thread it)))))))))
