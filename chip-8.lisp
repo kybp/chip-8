@@ -38,15 +38,30 @@ pixel when that pixel is not set.")
 
 ;;; CHIP-8 interface
 
+(defstruct pixel on-p rect)
+
+(defun make-screen ()
+  (let ((screen (make-array
+                 (list *screen-width* *screen-height*)
+                 :element-type 'pixel)))
+    (dotimes (x *screen-width* screen)
+      (dotimes (y *screen-height*)
+        (let* ((x* (* (mod x *screen-width*)  *pixel-width*))
+               (y* (* (mod y *screen-height*) *pixel-height*))
+               (rect (sdl2:make-rect x* y* *pixel-width* *pixel-height*)))
+          (setf (aref screen x y) (make-pixel :on-p nil :rect rect)))))))
+
+(defun free-screen (screen)
+  (dotimes (x *screen-width*)
+    (dotimes (y *screen-height*)
+      (sdl2:free-rect (pixel-rect (aref screen x y))))))
+
 (defclass chip-8 ()
   ((ram        :initform (make-array 4096 :element-type '(unsigned-byte 8)))
    (registers  :initform (make-array 16   :element-type '(unsigned-byte 8)))
    (i          :initform 0     :accessor i  :type (unsigned-byte 16))
    (pc         :initform #x200 :accessor pc :type (unsigned-byte 12))
-   (screen     :initform (make-array (list *screen-width* *screen-height*)
-                                     :element-type 'boolean
-                                     :initial-element nil)
-               :reader   screen)
+   (screen     :initform (make-screen) :reader   screen)
    (renderer   :initarg :renderer :accessor renderer)
    (delay      :initform 0 :accessor delay-timer :type (unsigned-byte 8))
    (sound      :initform 0 :accessor sound-timer :type (unsigned-byte 8))
@@ -66,6 +81,11 @@ pixel when that pixel is not set.")
     (initialize-font chip-8)
     (clear-screen chip-8)
     chip-8))
+
+(defun free-chip-8 (chip-8)
+  (awhen (timer-thread chip-8)
+    (destroy-thread it))
+  (free-screen (screen chip-8)))
 
 (defun initialize-font (chip-8)
   "Store font data for the 16 hex characters 0-F in the given CHIP-8."
@@ -126,9 +146,6 @@ positive integer less than 16."
   "Return the value of the pixel at (X, Y) on SCREEN. This will be a boolean
 indicating whether that pixel is on or not."
   (aref screen (mod x *screen-width*) (mod y *screen-height*)))
-
-(defun (setf pixel) (boolean screen x y)
-  (setf (aref screen (mod x *screen-width*) (mod y *screen-height*)) boolean))
 
 (defun fetch-instruction (chip-8)
   "Return the opcode of the next instruction to be executed in CHIP-8."
@@ -311,10 +328,12 @@ pixels."
      for i below n
      for row = (elt sprite i)
      do (loop for pixel in row for j from vx
-           do (symbol-macrolet ((screen (pixel (screen chip-8) j (+ i vy))))
+           do (symbol-macrolet ((pixel-on-p
+                                 (pixel-on-p
+                                  (pixel (screen chip-8) j (+ i vy)))))
                 (when pixel
-                  (when screen (setf (register #xf chip-8) 1))
-                  (setf screen (not screen)))))
+                  (when pixel-on-p (setf (register #xf chip-8) 1))
+                  (setf pixel-on-p (not pixel-on-p)))))
      finally (next-instruction chip-8)))
 
 (define-opcode "ex9e"
@@ -383,37 +402,29 @@ pixels."
 (defun set-draw-color (renderer rgb)
   (eval `(sdl2:set-render-draw-color ,renderer ,@rgb)))
 
-(defvar *rects* nil
-  "The list of pixel rects to be drawn in the current frame.")
-
-(defun draw-pixel (onp x y chip-8)
+(defun draw-pixel (x y chip-8)
   (let ((renderer (renderer chip-8))
-        (rect (sdl2:make-rect (* (mod x *screen-width*)  *pixel-width*)
-                              (* (mod y *screen-height*) *pixel-height*)
-                              *pixel-width* *pixel-height*)))
-    (set-draw-color renderer (if onp *on-rgba* *off-rgba*))
-    (sdl2:render-fill-rect renderer rect)
-    (push rect *rects*)))
+        (pixel    (pixel (screen chip-8) x y)))
+    (set-draw-color renderer (if (pixel-on-p pixel) *on-rgba* *off-rgba*))
+    (sdl2:render-fill-rect renderer (pixel-rect pixel))))
 
 (defun clear-screen (chip-8)
   "Un-set all of the pixels in CHIP-8's screen."
   (let ((screen (screen chip-8)))
     (dotimes (x *screen-width*)
       (dotimes (y *screen-height*)
-        (setf (pixel screen x y) nil)))))
+        (setf (pixel-on-p (pixel screen x y)) nil)))))
 
 (defun finish-draw (chip-8)
   "Finalize the current frame."
-  (sdl2:render-present (renderer chip-8))
-  (dolist (rect *rects*) (sdl2:free-rect rect))
-  (setf *rects* nil))
+  (sdl2:render-present (renderer chip-8)))
 
 (defun draw-screen (chip-8)
   "Draw the current screen state to the SDL window."
   (let ((screen (screen chip-8)))
     (dotimes (x *screen-width*)
       (dotimes (y *screen-height*)
-        (draw-pixel (pixel screen x y) x y chip-8)))
+        (draw-pixel x y chip-8)))
     (finish-draw chip-8)))
 
 ;;; Event handling
@@ -512,5 +523,4 @@ indicated by FILESPEC."
           (let ((chip-8 (make-chip-8 renderer)))
             (load-file filespec chip-8)
             (unwind-protect (run-chip-8 chip-8)
-              (awhen (timer-thread chip-8)
-                (destroy-thread it)))))))))
+              (free-chip-8 chip-8))))))))
